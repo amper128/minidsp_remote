@@ -15,8 +15,8 @@
 unsigned char buf[8];
 
 enum volume_dir {
-	VOLUME_UP,
 	VOLUME_DOWN,
+	VOLUME_UP,
 };
 
 /* текущий конфиг */
