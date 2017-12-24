@@ -1,35 +1,59 @@
+#include "Wire.h"
 #include "mcp_can.h"
 
-#define REMOTE_CAN_ADDR	(514)
-#define DSP_CAN_ADDR	(513)
+/* адрес ардуины на шине i2c */
+#define SLAVE_I2C_ADDR (0x08)
 
-#define CMD_GET_STATUS	(131)
-#define CMD_STATUS	(132)
-#define CMD_SET_CONFIG	(138)
-#define CMD_MUTE	(142)
-#define CMD_GET_CONFIG	(145)
-#define CMD_IR		(149)
-#define CMD_VOLUME	(150)
-#define CMD_START	(163)
+/* CAN шина */
+/* адрес ардуины в качестве пульта */
+#define REMOTE_CAN_ADDR (514)
+/* адрес miniDSP */
+#define DSP_CAN_ADDR (513)
 
-unsigned char buf[8];
+#define CMD_GET_STATUS (131)
+#define CMD_STATUS (132)
+#define CMD_SET_CONFIG (138)
+#define CMD_MUTE (142)
+#define CMD_GET_CONFIG (145)
+#define CMD_IR (149)
+#define CMD_VOLUME (150)
+#define CMD_START (163)
+
+static uint8_t vol_table[] = {
+    0,  0xFF, 3,  6,    0xFF, 9,    12,   0xFF, 15,   18,   21,  0xFF, 24,   27, 30,   0xFF,
+    33, 36,   39, 0xFF, 42,   45,   0xFF, 48,   51,   0xFF, 54,  57,   0xFF, 60, 63,   0xFF,
+    66, 0xFF, 69, 0xFF, 72,   0xFF, 75,   78,   0xFF, 81,   84,  0xFF, 0xFF, 87, 0xFF, 0xFF,
+    91, 0xFF, 94, 0xFF, 0xFF, 97,   0xFF, 0xFF, 101,  0xFF, 105, 0xFF, 255};
+
+static unsigned char buf[8];
 
 enum volume_dir {
 	VOLUME_DOWN,
 	VOLUME_UP,
 };
 
-/* текущий конфиг */
-uint8_t cur_config = 0u;
-
 /* init MCP1525, CS pin 10 */
-MCP_CAN CAN(10);
+static MCP_CAN CAN(10);
 
-void send_start_msg();
-void get_minidsp_status();
+static void send_start_msg();
+static void get_minidsp_status();
+static void receiveEvent(int howMany);
 
-void setup()
+static uint8_t n_volume = 0xFF;
+static uint8_t dsp_volume = 0xFF;
+
+static uint8_t n_mute = 0;
+static uint8_t dsp_mute = 0;
+
+static uint8_t n_input = 0;
+static uint8_t dsp_input = 0;
+
+void
+setup()
 {
+	Wire.begin(SLAVE_I2C_ADDR);
+	Wire.onReceive(receiveEvent);
+
 	Serial.begin(115200);
 
 	while (CAN_OK != CAN.begin(CAN_500KBPS)) {
@@ -44,7 +68,26 @@ void setup()
 	get_minidsp_status();
 }
 
-bool parse_msg(uint8_t * buf, uint8_t len)
+void
+receiveEvent(int)
+{
+	int i = 0;
+	int vol_t;
+
+	while (Wire.available()) {
+		buf[i] = uint8_t(Wire.read() & 0xFF);
+		i++;
+	}
+
+	vol_t = 255 - ((buf[1] - 1) & 0xFF);
+
+	n_volume = vol_table[vol_t];
+	n_input = buf[2];
+	n_mute = buf[3];
+}
+
+bool
+parse_msg(uint8_t *buf, uint8_t len)
 {
 	uint8_t i;
 	uint8_t crc = 0u;
@@ -60,25 +103,13 @@ bool parse_msg(uint8_t * buf, uint8_t len)
 
 		return false;
 	} else {
-		//uint8_t m_len = buf[0];
 		uint8_t m_type = buf[1];
 
 		switch (m_type) {
 		case CMD_STATUS:
-			Serial.print("Attenuation: -");
-			Serial.print(buf[2] >> 1);
-			Serial.println("dB");
-
-			Serial.print("Mute: ");
-			Serial.println(buf[3]);
-
-			Serial.print("Unknown: ");
-			Serial.println(buf[4]);
-
-			Serial.print("Config: ");
-			Serial.println(buf[5]);
-
-			cur_config = buf[5];
+			dsp_volume = buf[2];
+			dsp_mute = buf[3];
+			dsp_input = buf[5];
 
 			break;
 
@@ -86,7 +117,7 @@ bool parse_msg(uint8_t * buf, uint8_t len)
 			Serial.print("Query config: ");
 			Serial.println(buf[3]);
 
-			cur_config = buf[3];
+			dsp_input = buf[3];
 
 		default:
 			Serial.println("Unknown msg type!");
@@ -98,8 +129,8 @@ bool parse_msg(uint8_t * buf, uint8_t len)
 	return true;
 }
 
-
-void send_can_msg(uint8_t len, uint8_t * buf)
+void
+send_can_msg(uint8_t len, uint8_t *buf)
 {
 	uint8_t i;
 	uint8_t crc;
@@ -116,7 +147,8 @@ void send_can_msg(uint8_t len, uint8_t * buf)
 	CAN.sendMsgBuf(REMOTE_CAN_ADDR, 0, len + 2, (uint8_t *)send_buf);
 }
 
-void send_start_msg()
+void
+send_start_msg()
 {
 	uint8_t cmd_buf[1];
 
@@ -124,7 +156,8 @@ void send_start_msg()
 	send_can_msg(1, cmd_buf);
 }
 
-void get_minidsp_status()
+void
+get_minidsp_status()
 {
 	uint8_t cmd_buf[1];
 
@@ -132,7 +165,8 @@ void get_minidsp_status()
 	send_can_msg(1, cmd_buf);
 }
 
-void toggle_mute()
+void
+toggle_mute()
 {
 	uint8_t cmd_buf[1];
 
@@ -140,7 +174,8 @@ void toggle_mute()
 	send_can_msg(1, cmd_buf);
 }
 
-void change_volume(enum volume_dir dir)
+void
+change_volume(enum volume_dir dir)
 {
 	uint8_t cmd_buf[2];
 
@@ -150,7 +185,8 @@ void change_volume(enum volume_dir dir)
 	send_can_msg(2, cmd_buf);
 }
 
-void send_set_cfg(uint8_t num)
+void
+send_set_cfg(uint8_t num)
 {
 	uint8_t cmd_buf[2];
 
@@ -162,10 +198,10 @@ void send_set_cfg(uint8_t num)
 	cmd_buf[1] = num;
 
 	send_can_msg(2, cmd_buf);
-
 }
 
-void loop()
+void
+loop()
 {
 	if (CAN_MSGAVAIL == CAN.checkReceive()) {
 		uint8_t len = 0;
@@ -185,47 +221,22 @@ void loop()
 		}
 	}
 
-	if (Serial.available() > 0) {
-		int c;
-		c = Serial.read();
+	if (n_mute != dsp_mute) {
+		toggle_mute();
+	}
 
-		switch (c) {
-		case '1':
-			send_set_cfg(0);
-			break;
+	if (n_input != dsp_input) {
+		send_set_cfg(n_input);
+	}
 
-		case '2':
-			send_set_cfg(1);
-			break;
-
-		case '3':
-			send_set_cfg(2);
-			break;
-
-		case '4':
-			send_set_cfg(3);
-			break;
-
-		case '+':
-			change_volume(VOLUME_UP);
-			break;
-
-		case '-':
+	if (!n_mute) {
+		if ((n_volume - dsp_volume) > 3) {
 			change_volume(VOLUME_DOWN);
-			break;
-
-		case 'g':
-			get_minidsp_status();
-			break;
-
-		case 's':
-			send_start_msg();
-			break;
-
-		case 'm':
-			toggle_mute();
-			break;
+		} else if ((dsp_volume - n_volume) > 0) {
+			change_volume(VOLUME_UP);
 		}
 	}
+
+	delay(50);
 }
 
